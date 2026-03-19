@@ -95,7 +95,7 @@ export default function AttendanceTable({
     const year = date.getFullYear();
     const month = date.getMonth() + 1;
     const day = date.getDate();
-    const isWeekend = dayIndex >= 6;
+    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
     const key = `${year}-${month}-${day}`;
     const leaveKey = `${year}|${month}|${day}`;
 
@@ -186,7 +186,7 @@ export default function AttendanceTable({
     let lateCount = 0;
 
     weekDates.forEach((wd, i) => {
-      if (i >= 6) return;
+      if (weekDates[i].getDay() === 0 || weekDates[i].getDay() === 6) return;
       const cellDate = new Date(wd);
       cellDate.setHours(0, 0, 0, 0);
       if (cellDate > today2) return;

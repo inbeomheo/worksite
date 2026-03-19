@@ -136,8 +136,16 @@ const Index = () => {
     const weekYear = monday.getFullYear();
     let emps = data.employees.filter((e) => e.dataYear === weekYear && e.dataMonth === weekMonth);
     if (emps.length === 0) emps = data.employees;
-    if (teamFilter === "한성") return emps.filter((e) => e.team === "한성_F");
-    if (teamFilter === "태화") return emps.filter((e) => e.team === "태화_F");
+    if (teamFilter === "한성") {
+      const teamEmps = emps.filter((e) => e.team === "한성_F");
+      if (!searchQuery.trim()) return teamEmps;
+      return teamEmps.filter((e) => e.name.includes(searchQuery.trim()));
+    }
+    if (teamFilter === "태화") {
+      const teamEmps = emps.filter((e) => e.team === "태화_F");
+      if (!searchQuery.trim()) return teamEmps;
+      return teamEmps.filter((e) => e.name.includes(searchQuery.trim()));
+    }
     const sorted = [...emps.filter((e) => e.team === "한성_F"), ...emps.filter((e) => e.team === "태화_F")];
     if (!searchQuery.trim()) return sorted;
     return sorted.filter((e) => e.name.includes(searchQuery.trim()));

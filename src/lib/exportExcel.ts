@@ -52,7 +52,7 @@ export function exportAttendanceExcel(
       const cellDate = new Date(date);
       cellDate.setHours(0, 0, 0, 0);
       const isFuture = cellDate > today;
-      const isWeekend = di >= 6;
+      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
 
       if (isFuture) { cells.push("", ""); return; }
 

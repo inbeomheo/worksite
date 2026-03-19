@@ -260,10 +260,10 @@ export function parseExcelFile(buffer: ArrayBuffer): ParsedData {
           dailyRecords[`${empYear}-${empMonth}-${d}`] = { punchIn: pIn, punchOut: pOut };
         }
       }
-      // Days 23~31
-      for (let d = 23; d <= 31; d++) {
-        const inIdx = 50 + (d - 23) * 2;
-        const outIdx = 51 + (d - 23) * 2;
+      // Days 22~31
+      for (let d = 22; d <= 31; d++) {
+        const inIdx = 50 + (d - 22) * 2;
+        const outIdx = 51 + (d - 22) * 2;
         const pIn = excelTimeToString(row[inIdx]);
         const pOut = excelTimeToString(row[outIdx]);
         if (pIn || pOut) {

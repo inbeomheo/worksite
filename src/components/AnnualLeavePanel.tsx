@@ -53,8 +53,12 @@ export default function AnnualLeavePanel({ leaveEmployees, leaveDetails, rowOrde
   const modalEmp = useMemo(() => leaveEmployees.find((e) => e.name === modalName) ?? null, [leaveEmployees, modalName]);
   const modalDetails = useMemo(() => leaveDetails.filter((d) => d.name === modalName), [leaveDetails, modalName]);
 
-  const handleDragStart = (idx: number) => { dragRef.current = idx; };
+  const handleDragStart = (idx: number) => {
+    if (searchQuery.trim()) return;
+    dragRef.current = idx;
+  };
   const handleDrop = (targetIdx: number) => {
+    if (searchQuery.trim()) return;
     const srcIdx = dragRef.current;
     if (srcIdx == null || srcIdx === targetIdx) return;
     const names = orderedEmps.map((e) => e.name);
@@ -155,7 +159,7 @@ export default function AnnualLeavePanel({ leaveEmployees, leaveDetails, rowOrde
                   return (
                     <tr
                       key={emp.name}
-                      draggable
+                      draggable={!searchQuery.trim()}
                       onDragStart={() => handleDragStart(idx)}
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={() => handleDrop(idx)}
