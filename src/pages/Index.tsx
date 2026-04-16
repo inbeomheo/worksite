@@ -8,6 +8,7 @@ import { saveToSupabase, fetchFromSupabase, saveRowOrder, fetchRowOrder } from "
 import { toast } from "sonner";
 import { CloudUpload, Loader2, Search, X, Download } from "lucide-react";
 import { exportAttendanceExcel } from "@/lib/exportExcel";
+import WeekendPage from "./WeekendPage";
 
 const DAY_NAMES = ["일", "월", "화", "수", "목", "금", "토"];
 
@@ -32,7 +33,7 @@ function formatWeekRange(monday: Date): string {
 }
 
 type TeamFilter = "전체" | "한성" | "태화";
-type ActiveTab = "근태보고" | "연차관리";
+type ActiveTab = "근태보고" | "연차관리" | "주말근무";
 
 function isLate(timeStr: string): boolean {
   const [h, m] = timeStr.split(":").map(Number);
@@ -262,7 +263,7 @@ const Index = () => {
           </div>
         </div>
         <div className="flex gap-1.5">
-          {(["근태보고", "연차관리"] as ActiveTab[]).map((tab) => (
+          {(["근태보고", "연차관리", "주말근무"] as ActiveTab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => { setActiveTab(tab); setSearchQuery(""); }}
@@ -417,7 +418,9 @@ const Index = () => {
           />
         )}
 
-        {!data && (
+        {activeTab === "주말근무" && <WeekendPage />}
+
+        {!data && activeTab !== "주말근무" && (
           <div className="py-16 text-center">
             <div className="text-5xl mb-4">⬆️</div>
             <h2 className="text-sm font-semibold text-muted-foreground mb-2">
