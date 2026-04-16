@@ -1,16 +1,12 @@
-import { useState, useMemo } from "react";
-import { Printer, Download, Save } from "lucide-react";
+import { useState, useMemo, useRef, useCallback } from "react";
+import { Copy, Check, Save } from "lucide-react";
 import {
   reportPeriodRange,
-  reportPeriodLabel,
   currentReportPeriodKey,
-  fmtMin,
+  getDow,
 } from "@/lib/weekendCalc";
-import {
-  buildReportRows,
-  exportWeekendReportExcel,
-} from "@/lib/weekendExportExcel";
-import type { WkState, WkMonthlyReport, WkReportConfig } from "@/lib/weekendTypes";
+import type { WkState, WkMonthlyReport, WkReportConfig, WkRecord, WkSite } from "@/lib/weekendTypes";
+import { toast } from "sonner";
 
 interface Props {
   state: WkState;
@@ -18,9 +14,7 @@ interface Props {
   onSaveConfig: (config: WkReportConfig) => void;
 }
 
-// ---------------------------------------------------------------------------
-// Period key for a record date (day >= 16 → next month)
-// ---------------------------------------------------------------------------
+// ── Period key from record date ──
 function dateToPeriodKey(dateStr: string): string {
   const [y, m, d] = dateStr.split("-").map(Number);
   if (d >= 16) {
@@ -31,24 +25,182 @@ function dateToPeriodKey(dateStr: string): string {
   return `${y}-${String(m).padStart(2, "0")}`;
 }
 
+// ── Report row ──
+interface ReportRow {
+  department: string;
+  site: string;
+  date: string;      // MM/DD
+  fullDate: string;   // YYYY-MM-DD
+  dow: string;
+  headcount: number;
+  paidHours: number;
+  note: string;
+}
+
+function buildRows(
+  periodKey: string,
+  records: Record<string, WkRecord>,
+  sites: Record<string, WkSite>,
+  defaultDepartment: string
+): ReportRow[] {
+  const { start, end } = reportPeriodRange(periodKey);
+  const agg = new Map<string, { department: string; site: string; date: string; names: Set<string>; minutes: number }>();
+
+  for (const rec of Object.values(records)) {
+    if (rec.date < start || rec.date > end) continue;
+    if (rec.workMinutes <= 0) continue;
+    const siteName = rec.site ?? "";
+    const siteObj = siteName ? sites[siteName] : null;
+    const department = siteObj?.department || defaultDepartment;
+    const aggKey = `${siteName}__${rec.date}`;
+    if (!agg.has(aggKey)) {
+      agg.set(aggKey, { department, site: siteName, date: rec.date, names: new Set(), minutes: 0 });
+    }
+    const entry = agg.get(aggKey)!;
+    entry.names.add(rec.name);
+    entry.minutes += rec.workMinutes;
+  }
+
+  const rows: ReportRow[] = [];
+  for (const entry of agg.values()) {
+    const [, m, d] = entry.date.split("-");
+    rows.push({
+      department: entry.department,
+      site: entry.site,
+      date: `${m}/${d}`,
+      fullDate: entry.date,
+      dow: getDow(entry.date),
+      headcount: entry.names.size,
+      paidHours: Math.floor(entry.minutes / 60),
+      note: "",
+    });
+  }
+  rows.sort((a, b) => {
+    if (a.department !== b.department) return a.department.localeCompare(b.department);
+    if (a.site !== b.site) return a.site.localeCompare(b.site);
+    return a.fullDate.localeCompare(b.fullDate);
+  });
+  return rows;
+}
+
+// ── Period label ──
+function periodTitle(periodKey: string): string {
+  const { start, end } = reportPeriodRange(periodKey);
+  const [, sm, sd] = start.split("-").map(Number);
+  const [, em, ed] = end.split("-").map(Number);
+  return `${sm}~${em}월 주말근무현황 (${sm}월 ${sd}일 ~ ${em}월 ${ed}일)`;
+}
+
+// ── HTML 생성 ──
+function generateHTML(
+  rows: ReportRow[],
+  periodKey: string,
+  sitePart: string,
+  notes: string,
+  attachments: string
+): string {
+  const title = periodTitle(periodKey);
+  const p = (text: string) =>
+    `<p style="font-family:'맑은 고딕';font-size:9pt;color:rgb(0, 0, 0);margin-top:0px;margin-bottom:0px;line-height:1.5;">${text}</p>`;
+
+  const thStyle = `font-family:'맑은 고딕', monospace;color:white;font-size:10pt;font-weight:700;text-align:center;background:rgb(23, 55, 94);`;
+  const thBorderFirst = `border-width:1px 1px 3px;border-style:solid solid double;border-color:rgb(0, 0, 0);`;
+  const thBorderRest = `border-width:1px 1px 3px medium;border-style:solid solid double none;border-color:rgb(0, 0, 0) rgb(0, 0, 0) rgb(0, 0, 0) currentcolor;`;
+  const tdBase = `font-family:'맑은 고딕', monospace;color:black;font-size:10pt;text-align:center;`;
+  const tdDotted = `border-width:medium 1px 1px medium;border-style:none solid dotted none;border-color:currentcolor rgb(0, 0, 0) rgb(0, 0, 0) currentcolor;`;
+  const tdSolid = `border-width:medium 1px 1px medium;border-style:none solid solid none;border-color:currentcolor rgb(0, 0, 0) rgb(0, 0, 0) currentcolor;`;
+  const tdSpan = `border-width:medium 1px 1px;border-style:none solid solid;border-color:currentcolor rgb(0, 0, 0) rgb(0, 0, 0);`;
+
+  const cell = (text: string) =>
+    `<p style="font-family:'맑은 고딕', monospace;font-size:10pt;color:inherit;text-align:center;margin-top:0px;margin-bottom:0px;line-height:1.5;">${text}</p>`;
+
+  // Group by dept+site for rowspan
+  const groups: { dept: string; site: string; rows: ReportRow[] }[] = [];
+  for (const row of rows) {
+    const last = groups[groups.length - 1];
+    if (last && last.dept === row.department && last.site === row.site) {
+      last.rows.push(row);
+    } else {
+      groups.push({ dept: row.department, site: row.site, rows: [row] });
+    }
+  }
+
+  let tableRows = "";
+  for (const g of groups) {
+    const n = g.rows.length;
+    g.rows.forEach((row, i) => {
+      const isLast = i === n - 1;
+      const borderStyle = isLast ? tdSolid : tdDotted;
+      let tr = "<tr>";
+
+      if (i === 0) {
+        tr += `<td rowspan="${n}" style="${tdBase}${tdSpan}height:${n * 22}px;">${cell(g.dept)}</td>`;
+        tr += `<td rowspan="${n}" style="${tdBase}${tdSpan}white-space-collapse:collapse;">${cell(g.site || "-")}</td>`;
+      }
+
+      tr += `<td style="${tdBase}${borderStyle}">${cell(row.date)}</td>`;
+      tr += `<td style="${tdBase}${borderStyle}">${cell(row.dow)}</td>`;
+      tr += `<td style="${tdBase}${borderStyle}">${cell(String(row.headcount))}</td>`;
+      tr += `<td style="${tdBase}${borderStyle}">${cell(String(row.paidHours))}</td>`;
+      tr += `<td style="${tdBase}${borderStyle}">${cell(row.note || "<br />")}</td>`;
+      tr += "</tr>";
+      tableRows += tr;
+    });
+  }
+
+  const headers = ["부서", "팀/파트", "근무일", "요일", "근무인원", "총근무시간", "비고"];
+  const colWidths = [71, 77, 51, 39, 64, 78, 93];
+
+  const colgroup = colWidths.map((w) => `<col style="width:${w}px;" />`).join("");
+  const totalWidth = colWidths.reduce((s, w) => s + w, 0);
+
+  const headerRow = headers
+    .map(
+      (h, i) =>
+        `<td style="${thStyle}${i === 0 ? thBorderFirst : thBorderRest}">${cell(h)}</td>`
+    )
+    .join("");
+
+  const table = `<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:${totalWidth}px;margin-left:40px;table-layout:fixed;overflow-wrap:break-word;word-break:normal;">
+<colgroup>${colgroup}</colgroup>
+<tbody>
+<tr style="height:31px;">${headerRow}</tr>
+${tableRows}
+</tbody>
+</table>`;
+
+  const notesLines = notes
+    .split("\n")
+    .map((line) => p(`&nbsp; &nbsp; &nbsp;${line}`))
+    .join("\n");
+
+  const attachLines = attachments
+    .split("\n")
+    .map((line) => p(`&nbsp; &nbsp; &nbsp;${line}`))
+    .join("\n");
+
+  return [
+    p("<br />"),
+    p(`&nbsp;가. ${title}<br /><br />`),
+    table,
+    p("<br />"),
+    p("<br />"),
+    p("&nbsp;나. 특이사항"),
+    notesLines,
+    p("<br />"),
+    p("<br />"),
+    p("&nbsp;다. 첨부"),
+    attachLines,
+  ].join("\n");
+}
+
+// ═══════════════════════════════════════════════
+// Component
+// ═══════════════════════════════════════════════
 export default function WeekendMonthlyReport({ state, onSaveReport, onSaveConfig }: Props) {
-  const { records, employees, sites, monthlyReports, reportConfig } = state;
+  const { records, sites, monthlyReports, reportConfig } = state;
 
-  const [periodKey, setPeriodKey] = useState<string>(currentReportPeriodKey);
-  const [notes, setNotes] = useState<string>(monthlyReports[currentReportPeriodKey()]?.notes ?? "");
-  const [attachmentCount, setAttachmentCount] = useState<number>(
-    monthlyReports[currentReportPeriodKey()]?.attachmentCount ?? 1
-  );
-
-  // Approval line local state (wk-no-print)
-  const [approvalLine, setApprovalLine] = useState<string>(reportConfig.approvalLine ?? "");
-  const [defaultDepartment, setDefaultDepartment] = useState<string>(
-    reportConfig.defaultDepartment ?? ""
-  );
-
-  // -----------------------------------------------------------------------
-  // Available periods derived from records
-  // -----------------------------------------------------------------------
+  // ── Available periods ──
   const availablePeriods = useMemo(() => {
     const set = new Set<string>();
     set.add(currentReportPeriodKey());
@@ -58,307 +210,185 @@ export default function WeekendMonthlyReport({ state, onSaveReport, onSaveConfig
     return Array.from(set).sort().reverse();
   }, [records]);
 
-  // -----------------------------------------------------------------------
-  // When period changes, load saved notes/attachmentCount
-  // -----------------------------------------------------------------------
-  function handlePeriodChange(key: string) {
-    setPeriodKey(key);
-    const saved = monthlyReports[key];
-    setNotes(saved?.notes ?? "");
-    setAttachmentCount(saved?.attachmentCount ?? 1);
-  }
+  const [periodKey, setPeriodKey] = useState<string>(() => {
+    // 데이터가 있는 기간 자동 선택
+    const counts = new Map<string, number>();
+    for (const rec of Object.values(records)) {
+      const pk = dateToPeriodKey(rec.date);
+      counts.set(pk, (counts.get(pk) ?? 0) + 1);
+    }
+    if (counts.size > 0) {
+      return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0][0];
+    }
+    return currentReportPeriodKey();
+  });
 
-  // -----------------------------------------------------------------------
-  // Report rows for current period
-  // -----------------------------------------------------------------------
+  const saved = monthlyReports[periodKey];
+  const [notes, setNotes] = useState(saved?.notes ?? "P4 그린동 현장 작업으로 인한 주말 근무");
+  const [attachments, setAttachments] = useState("1) 주말근무신청서 4부.");
+  const [defaultDepartment, setDefaultDepartment] = useState(reportConfig.defaultDepartment || "사업1본부");
+  const [sitePart, setSitePart] = useState("그린동파트\n(P4 그린동)");
+  const [copied, setCopied] = useState(false);
+  const [showCode, setShowCode] = useState(false);
+  const previewRef = useRef<HTMLDivElement>(null);
+
+  // ── Build rows ──
   const reportRows = useMemo(
-    () =>
-      buildReportRows(
-        periodKey,
-        records,
-        employees,
-        sites,
-        defaultDepartment || reportConfig.defaultDepartment
-      ),
-    [periodKey, records, employees, sites, defaultDepartment, reportConfig.defaultDepartment]
+    () => buildRows(periodKey, records, sites, defaultDepartment),
+    [periodKey, records, sites, defaultDepartment]
   );
 
-  // -----------------------------------------------------------------------
-  // Row span computation for department and site columns
-  // -----------------------------------------------------------------------
-  const rowSpans = useMemo(() => {
-    const dept: number[] = new Array(reportRows.length).fill(0);
-    const site: number[] = new Array(reportRows.length).fill(0);
+  // ── Apply sitePart override ──
+  const displayRows = useMemo(() => {
+    return reportRows.map((r) => ({
+      ...r,
+      site: sitePart.replace(/\n/g, "<br />"),
+    }));
+  }, [reportRows, sitePart]);
 
-    let i = 0;
-    while (i < reportRows.length) {
-      let dj = i + 1;
-      while (dj < reportRows.length && reportRows[dj].department === reportRows[i].department) dj++;
-      dept[i] = dj - i;
-      // Within the same dept block, compute site spans
-      let sk = i;
-      while (sk < dj) {
-        let sl = sk + 1;
-        while (
-          sl < dj &&
-          reportRows[sl].site === reportRows[sk].site
-        ) sl++;
-        site[sk] = sl - sk;
-        sk = sl;
-      }
-      i = dj;
+  // ── Generate HTML ──
+  const html = useMemo(
+    () => generateHTML(displayRows, periodKey, sitePart, notes, attachments),
+    [displayRows, periodKey, sitePart, notes, attachments]
+  );
+
+  // ── Copy HTML ──
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([html], { type: "text/plain" }),
+        }),
+      ]);
+      setCopied(true);
+      toast.success("HTML 복사 완료 — 메일/게시판에 붙여넣기하세요");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback: text only
+      await navigator.clipboard.writeText(html);
+      setCopied(true);
+      toast.success("코드 복사 완료");
+      setTimeout(() => setCopied(false), 2000);
     }
-    return { dept, site };
-  }, [reportRows]);
+  }, [html]);
 
-  // -----------------------------------------------------------------------
-  // Totals
-  // -----------------------------------------------------------------------
-  const totals = useMemo(() => {
-    const headcount = reportRows.reduce((s, r) => s + r.headcount, 0);
-    const paidHours = reportRows.reduce((s, r) => s + r.paidHours, 0);
-    return { headcount, paidHours };
-  }, [reportRows]);
-
-  // -----------------------------------------------------------------------
-  // Print
-  // -----------------------------------------------------------------------
-  function handlePrint() {
-    document.body.classList.add("wk-print-report");
-    window.print();
-    document.body.classList.remove("wk-print-report");
-  }
-
-  // -----------------------------------------------------------------------
-  // Excel export
-  // -----------------------------------------------------------------------
-  function handleExcel() {
+  // ── Save ──
+  const handleSave = useCallback(() => {
     const report: WkMonthlyReport = {
       notes,
-      attachmentCount,
-      updatedAt: new Date().toISOString(),
-    };
-    exportWeekendReportExcel(periodKey, reportRows, report, {
-      defaultDepartment: defaultDepartment || reportConfig.defaultDepartment,
-      approvalLine: approvalLine || reportConfig.approvalLine,
-    });
-  }
-
-  // -----------------------------------------------------------------------
-  // Save
-  // -----------------------------------------------------------------------
-  function handleSave() {
-    const report: WkMonthlyReport = {
-      notes,
-      attachmentCount,
+      attachmentCount: 1,
       updatedAt: new Date().toISOString(),
     };
     onSaveReport(periodKey, report);
     onSaveConfig({
-      defaultDepartment: defaultDepartment || reportConfig.defaultDepartment,
-      approvalLine: approvalLine || reportConfig.approvalLine,
+      defaultDepartment,
+      approvalLine: reportConfig.approvalLine,
     });
-  }
+    toast.success("저장 완료");
+  }, [periodKey, notes, defaultDepartment, reportConfig.approvalLine, onSaveReport, onSaveConfig]);
 
-  // -----------------------------------------------------------------------
-  // Render
-  // -----------------------------------------------------------------------
-  const label = reportPeriodLabel(periodKey);
+  // ── Period change ──
+  function handlePeriodChange(key: string) {
+    setPeriodKey(key);
+    const s = monthlyReports[key];
+    if (s?.notes) setNotes(s.notes);
+  }
 
   return (
     <div className="space-y-4">
-      {/* Toolbar (wk-no-print) */}
-      <div className="wk-no-print flex flex-wrap items-center gap-2">
-        {/* Period selector */}
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
         <select
-          className="text-sm border border-border rounded-md bg-background px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-ring"
+          className="text-sm border border-border rounded-md bg-background px-2 py-1.5"
           value={periodKey}
           onChange={(e) => handlePeriodChange(e.target.value)}
         >
           {availablePeriods.map((k) => (
-            <option key={k} value={k}>
-              {k} ({reportPeriodLabel(k).split(" ")[1] ?? k})
-            </option>
+            <option key={k} value={k}>{k}</option>
           ))}
         </select>
 
         <div className="flex-1" />
 
-        {/* Save */}
         <button
           onClick={handleSave}
-          className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+          className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
         >
           <Save className="w-4 h-4" />
           저장
         </button>
 
-        {/* Print */}
         <button
-          onClick={handlePrint}
-          className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-slate-600 hover:bg-slate-700 text-white transition-colors"
+          onClick={() => setShowCode(!showCode)}
+          className="text-sm px-3 py-1.5 rounded-md bg-slate-600 hover:bg-slate-700 text-white"
         >
-          <Printer className="w-4 h-4" />
-          인쇄
+          {showCode ? "미리보기" : "코드보기"}
         </button>
 
-        {/* Excel */}
         <button
-          onClick={handleExcel}
-          className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white transition-colors"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white"
         >
-          <Download className="w-4 h-4" />
-          엑셀
+          {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+          {copied ? "복사됨" : "HTML 복사"}
         </button>
       </div>
 
-      {/* Report document */}
-      <div className="wk-report-doc bg-white text-black rounded-lg border border-border p-8 shadow-sm space-y-6 text-sm">
-        {/* Title */}
-        <h2 className="text-center text-xl font-bold tracking-wide">
-          {label.match(/(\d+)월/)?.[1] ?? ""}월 주말근무 보고
-        </h2>
-
-        {/* 가. 현황 테이블 */}
-        <section>
-          <h3 className="font-bold mb-2">가. {label}</h3>
-          {reportRows.length === 0 ? (
-            <p className="text-muted-foreground text-xs">해당 기간 근무 기록이 없습니다.</p>
-          ) : (
-            <table className="wk-rpt-table w-full border-collapse text-xs">
-              <thead>
-                <tr className="bg-gray-100">
-                  <th className="border border-gray-300 px-2 py-1 text-center">부서</th>
-                  <th className="border border-gray-300 px-2 py-1 text-center">팀/파트</th>
-                  <th className="border border-gray-300 px-2 py-1 text-center">근무일</th>
-                  <th className="border border-gray-300 px-2 py-1 text-center">요일</th>
-                  <th className="border border-gray-300 px-2 py-1 text-center">근무인원</th>
-                  <th className="border border-gray-300 px-2 py-1 text-center">총근무시간(h)</th>
-                  <th className="border border-gray-300 px-2 py-1 text-center">비고</th>
-                </tr>
-              </thead>
-              <tbody>
-                {reportRows.map((row, idx) => (
-                  <tr key={`${row.site}-${row.date}`}>
-                    {/* 부서 (row span) */}
-                    {rowSpans.dept[idx] > 0 && (
-                      <td
-                        className="border border-gray-300 px-2 py-1 text-center align-middle"
-                        rowSpan={rowSpans.dept[idx]}
-                      >
-                        {row.department}
-                      </td>
-                    )}
-                    {/* 팀/파트 (row span) */}
-                    {rowSpans.site[idx] > 0 && (
-                      <td
-                        className="border border-gray-300 px-2 py-1 text-center align-middle"
-                        rowSpan={rowSpans.site[idx]}
-                      >
-                        {row.site || "-"}
-                      </td>
-                    )}
-                    <td className="border border-gray-300 px-2 py-1 text-center">{row.date}</td>
-                    <td className="border border-gray-300 px-2 py-1 text-center">{row.dow}</td>
-                    <td className="border border-gray-300 px-2 py-1 text-center tabular-nums">
-                      {row.headcount}
-                    </td>
-                    <td className="border border-gray-300 px-2 py-1 text-center tabular-nums">
-                      {row.paidHours}
-                    </td>
-                    <td className="border border-gray-300 px-2 py-1" />
-                  </tr>
-                ))}
-                {/* Total row */}
-                <tr className="font-bold bg-gray-50">
-                  <td
-                    className="border border-gray-300 px-2 py-1 text-center"
-                    colSpan={4}
-                  >
-                    합계
-                  </td>
-                  <td className="border border-gray-300 px-2 py-1 text-center tabular-nums">
-                    {totals.headcount}
-                  </td>
-                  <td className="border border-gray-300 px-2 py-1 text-center tabular-nums">
-                    {totals.paidHours}
-                  </td>
-                  <td className="border border-gray-300 px-2 py-1" />
-                </tr>
-              </tbody>
-            </table>
-          )}
-        </section>
-
-        {/* 나. 특이사항 */}
-        <section>
-          <h3 className="font-bold mb-2">나. 특이사항</h3>
-          {/* Display div (print-visible) */}
-          <div className="min-h-[48px] whitespace-pre-wrap text-xs border border-gray-200 rounded p-2">
-            {notes || <span className="text-gray-400">없음</span>}
-          </div>
-          {/* Textarea (screen only) */}
+      {/* 설정 패널 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-muted/30 border border-border rounded-lg p-3 text-sm">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">부서명</span>
+          <input
+            type="text"
+            value={defaultDepartment}
+            onChange={(e) => setDefaultDepartment(e.target.value)}
+            className="border border-border rounded px-2 py-1 text-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">팀/파트</span>
           <textarea
-            className="wk-no-print mt-2 w-full text-xs border border-border rounded p-2 focus:outline-none focus:ring-2 focus:ring-ring resize-none"
-            rows={3}
-            placeholder="특이사항을 입력하세요"
+            value={sitePart}
+            onChange={(e) => setSitePart(e.target.value)}
+            rows={2}
+            className="border border-border rounded px-2 py-1 text-sm resize-none"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">특이사항</span>
+          <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            className="border border-border rounded px-2 py-1 text-sm resize-none"
           />
-        </section>
-
-        {/* 다. 첨부 */}
-        <section>
-          <h3 className="font-bold mb-1">다. 첨부</h3>
-          <p>
-            주말근무신청서{" "}
-            <span className="font-bold tabular-nums">{attachmentCount}</span>부. 끝.
-          </p>
-          {/* Attachment count input (screen only) */}
-          <div className="wk-no-print mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-            <label>첨부 부수:</label>
-            <input
-              type="number"
-              min={0}
-              className="w-16 border border-border rounded px-2 py-0.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-ring"
-              value={attachmentCount}
-              onChange={(e) => setAttachmentCount(Math.max(0, parseInt(e.target.value) || 0))}
-            />
-          </div>
-        </section>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">첨부</span>
+          <textarea
+            value={attachments}
+            onChange={(e) => setAttachments(e.target.value)}
+            rows={2}
+            className="border border-border rounded px-2 py-1 text-sm resize-none"
+          />
+        </label>
       </div>
 
-      {/* Approval line / config (wk-no-print) */}
-      <div className="wk-no-print bg-muted/30 border border-border rounded-lg p-4 space-y-3 text-sm">
-        <h4 className="font-semibold text-muted-foreground text-xs uppercase tracking-wide">
-          보고서 설정
-        </h4>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="font-medium">기본 부서명</span>
-            <input
-              type="text"
-              className="border border-border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-ring text-sm"
-              placeholder={reportConfig.defaultDepartment || "예: 생산팀"}
-              value={defaultDepartment}
-              onChange={(e) => setDefaultDepartment(e.target.value)}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="font-medium">결재선</span>
-            <textarea
-              className="border border-border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-ring text-sm resize-none"
-              rows={2}
-              placeholder={reportConfig.approvalLine || "예: 담당→팀장→부장"}
-              value={approvalLine}
-              onChange={(e) => setApprovalLine(e.target.value)}
-            />
-          </label>
+      {/* Preview or Code */}
+      {showCode ? (
+        <div className="relative">
+          <pre className="bg-slate-900 text-slate-200 text-xs p-4 rounded-lg overflow-auto max-h-[500px] whitespace-pre-wrap break-all">
+            {html}
+          </pre>
         </div>
-        <p className="text-xs text-muted-foreground">
-          * 저장 버튼을 누르면 위 설정이 함께 저장됩니다.
-        </p>
-      </div>
+      ) : (
+        <div
+          ref={previewRef}
+          className="bg-white border border-border rounded-lg p-6 shadow-sm overflow-auto"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      )}
     </div>
   );
 }

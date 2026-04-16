@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, FileSpreadsheet } from "lucide-react";
 import { toast } from "sonner";
 import type {
   WkState,
@@ -9,7 +9,7 @@ import type {
   WkReportConfig,
   UploadPreparation,
 } from "@/lib/weekendTypes";
-import { recomputeRecord, uid } from "@/lib/weekendCalc";
+import { recomputeRecord, uid, currentReportPeriodKey } from "@/lib/weekendCalc";
 import {
   fetchWeekendState,
   saveWkSites,
@@ -21,7 +21,8 @@ import {
   deleteWkUpload,
   saveWkConfig,
 } from "@/lib/weekendSupabaseSync";
-import { parseWeekendExcelFile, prepareWeekendUpload } from "@/lib/weekendParseExcel";
+import { parseWeekendExcelFile, parseWeekendCumulative, prepareWeekendUpload } from "@/lib/weekendParseExcel";
+import { exportWeekendFullExcel } from "@/lib/weekendExportExcel";
 import WeekendLeaderboard from "@/components/weekend/WeekendLeaderboard";
 import WeekendDetail from "@/components/weekend/WeekendDetail";
 import WeekendWeeklyTable from "@/components/weekend/WeekendWeeklyTable";
@@ -29,6 +30,7 @@ import WeekendMonthlyReport from "@/components/weekend/WeekendMonthlyReport";
 import WeekendEmployees from "@/components/weekend/WeekendEmployees";
 import WeekendUploads from "@/components/weekend/WeekendUploads";
 import WeekendSettings from "@/components/weekend/WeekendSettings";
+import WeekendHoursCheck from "@/components/weekend/WeekendHoursCheck";
 import WeekendFileUpload from "@/components/weekend/WeekendFileUpload";
 
 // ─────────────────────────────────────────────
@@ -38,6 +40,7 @@ type SubTab =
   | "리더보드"
   | "개인상세"
   | "주별테이블"
+  | "근무시간확인"
   | "월간보고서"
   | "직원마스터"
   | "업로드이력"
@@ -47,6 +50,7 @@ const SUB_TABS: { id: SubTab; icon: string }[] = [
   { id: "리더보드", icon: "📊" },
   { id: "개인상세", icon: "👤" },
   { id: "주별테이블", icon: "📅" },
+  { id: "근무시간확인", icon: "📋" },
   { id: "월간보고서", icon: "📄" },
   { id: "직원마스터", icon: "👥" },
   { id: "업로드이력", icon: "📂" },
@@ -157,6 +161,7 @@ export default function WeekendPage() {
         files.map(async (file) => ({
           file,
           rows: await parseWeekendExcelFile(file),
+          cumulative: await parseWeekendCumulative(file),
         }))
       );
       return prepareWeekendUpload(
@@ -466,6 +471,13 @@ export default function WeekendPage() {
   const handleBulkAssign = useCallback(
     async (site: string) => {
       try {
+        // 현장이 없으면 자동 생성 (기본 점심 60분)
+        const updatedSites = { ...state.sites };
+        if (!updatedSites[site]) {
+          updatedSites[site] = { name: site, lunchMinutes: 90, department: "" };
+          await saveWkSites(Object.values(updatedSites));
+        }
+
         const updatedEmployees = { ...state.employees };
         const empsToSave: WkEmployee[] = [];
         for (const [name, emp] of Object.entries(updatedEmployees)) {
@@ -476,21 +488,24 @@ export default function WeekendPage() {
         }
         if (empsToSave.length > 0) await saveWkEmployeesBatch(empsToSave);
 
-        // Recompute records
+        // Recompute records with updated sites
         const records = { ...state.records };
         for (const key of Object.keys(records)) {
           const rec = { ...records[key] };
-          recomputeRecord(rec, state.sites, updatedEmployees);
+          recomputeRecord(rec, updatedSites, updatedEmployees);
           records[key] = rec;
         }
         await saveWkRecordsBatch(Object.values(records));
 
         setState((prev) => ({
           ...prev,
+          sites: updatedSites,
           employees: updatedEmployees,
           records,
         }));
-        toast.success(`미지정 직원 → "${site}" 일괄 배정 완료`);
+        toast.success(
+          `미지정 ${empsToSave.length}명 → "${site}" 일괄 배정 완료`
+        );
       } catch (err: any) {
         toast.error(`일괄 배정 실패: ${err.message}`);
       }
@@ -540,9 +555,35 @@ export default function WeekendPage() {
     }
   }, []);
 
-  const handleEditRecord = useCallback((_key: string) => {
-    // placeholder
-  }, []);
+  const handleEditRecord = useCallback(
+    async (key: string, updates?: Partial<WkRecord>) => {
+      if (!updates) return;
+      try {
+        const rec = { ...state.records[key], ...updates };
+        // 시간 변경 시 재계산
+        const ci = rec.checkIn ? new Date(rec.checkIn) : null;
+        const co = rec.checkOut ? new Date(rec.checkOut) : null;
+        const empSite = state.employees[rec.name]?.site ?? null;
+        const site = empSite ? state.sites[empSite] ?? null : null;
+        const { calcWork } = await import("@/lib/weekendCalc");
+        const calc = calcWork(ci, co, site, rec.lunchOverride);
+        rec.stayMinutes = calc.stayMinutes;
+        rec.lunchMinutes = calc.lunchMinutes;
+        rec.workMinutes = calc.workMinutes;
+        rec.warnings = calc.warnings;
+
+        await saveWkRecordsBatch([rec]);
+        setState((prev) => ({
+          ...prev,
+          records: { ...prev.records, [key]: rec },
+        }));
+        toast.success(`${rec.name} ${rec.date} 수정 완료`);
+      } catch (err: any) {
+        toast.error(`수정 실패: ${err.message}`);
+      }
+    },
+    [state]
+  );
 
   // ─────────────────────────────────────────────
   // Render
@@ -595,6 +636,37 @@ export default function WeekendPage() {
           ))}
         </select>
 
+        {/* 누적관리 엑셀 내보내기 */}
+        <button
+          onClick={() => {
+            // 레코드에서 가장 많은 기간 자동 감지
+            const periodCounts = new Map<string, number>();
+            for (const rec of Object.values(state.records)) {
+              const [y, m, d] = rec.date.split("-").map(Number);
+              let pk: string;
+              if (d >= 16) {
+                const nm = m + 1;
+                pk = nm > 12 ? `${y + 1}-01` : `${y}-${String(nm).padStart(2, "0")}`;
+              } else {
+                pk = `${y}-${String(m).padStart(2, "0")}`;
+              }
+              periodCounts.set(pk, (periodCounts.get(pk) ?? 0) + 1);
+            }
+            let pk = currentReportPeriodKey();
+            if (periodCounts.size > 0) {
+              pk = Array.from(periodCounts.entries()).sort((a, b) => b[1] - a[1])[0][0];
+            }
+            const dept = state.reportConfig.defaultDepartment || "사업1본부";
+            exportWeekendFullExcel(pk, state.records, state.employees, state.sites, dept);
+            toast.success("누적관리 엑셀 다운로드 완료");
+          }}
+          disabled={Object.keys(state.records).length === 0}
+          className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 transition-colors disabled:opacity-40"
+        >
+          <FileSpreadsheet className="h-4 w-4" />
+          누적관리
+        </button>
+
         {/* File upload */}
         <WeekendFileUpload onPrepare={handlePrepare} onApply={handleApply} />
       </div>
@@ -627,6 +699,15 @@ export default function WeekendPage() {
           employees={state.employees}
           sites={state.sites}
           onSelectPerson={handleSelectPerson}
+        />
+      )}
+
+      {subTab === "근무시간확인" && (
+        <WeekendHoursCheck
+          records={state.records}
+          employees={state.employees}
+          sites={state.sites}
+          onEditRecord={handleEditRecord}
         />
       )}
 

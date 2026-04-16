@@ -56,9 +56,39 @@ export default function WeekendEmployees({
   }, [employees, search, filter, statsMap]);
 
   function handleBulkAssign() {
-    const site = window.prompt("일괄 지정할 현장명을 입력하세요:");
-    if (site && site.trim()) {
-      onBulkAssign(site.trim());
+    if (siteNames.length === 0) {
+      // 현장이 없으면 직접 입력받아서 생성
+      const site = window.prompt(
+        "등록된 현장이 없습니다.\n새 현장명을 입력하면 자동 생성 후 일괄 배정합니다:"
+      );
+      if (site && site.trim()) {
+        onBulkAssign(site.trim());
+      }
+    } else if (siteNames.length === 1) {
+      // 현장이 1개면 바로 배정
+      if (window.confirm(`미지정 직원을 "${siteNames[0]}"에 일괄 배정하시겠습니까?`)) {
+        onBulkAssign(siteNames[0]);
+      }
+    } else {
+      // 현장이 여러 개면 선택
+      const msg = siteNames.map((s, i) => `${i + 1}. ${s}`).join("\n");
+      const choice = window.prompt(
+        `일괄 배정할 현장 번호를 선택하세요:\n\n${msg}`
+      );
+      if (choice) {
+        const idx = parseInt(choice) - 1;
+        if (idx >= 0 && idx < siteNames.length) {
+          onBulkAssign(siteNames[idx]);
+        } else {
+          // 번호가 아니라 이름을 직접 입력한 경우
+          const trimmed = choice.trim();
+          if (siteNames.includes(trimmed)) {
+            onBulkAssign(trimmed);
+          } else {
+            onBulkAssign(trimmed); // 새 현장으로 생성
+          }
+        }
+      }
     }
   }
 

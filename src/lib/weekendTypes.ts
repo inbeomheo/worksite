@@ -31,6 +31,17 @@ export interface WkRecord {
   manualOverride: boolean;
   lunchOverride: number | null;
   uploadId: string | null;
+  employeeId: string;
+  workGroup: string;
+  sourceWorkMinutes: number | null;
+}
+
+// 근무시간 확인 시트에서 파싱한 누적 데이터
+export interface WkCumulative {
+  name: string;
+  position: string;
+  totalHours: number;
+  allowance: number;
 }
 
 export interface WkUpload {
@@ -83,4 +94,5 @@ export interface UploadPreparation {
     uploadId: string;
     records: WkRecord[];
   }[];
+  cumulative: WkCumulative[];
 }

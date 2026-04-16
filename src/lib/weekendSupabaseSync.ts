@@ -1,4 +1,3 @@
-import { supabase } from "@/integrations/supabase/client";
 import type {
   WkSite,
   WkEmployee,
@@ -10,6 +9,30 @@ import type {
   WkState,
 } from "./weekendTypes";
 
+// ─────────────────────────────────────────────
+// localStorage 키
+// ─────────────────────────────────────────────
+const LS = {
+  sites: "wk_sites",
+  employees: "wk_employees",
+  records: "wk_records",
+  uploads: "wk_uploads",
+  config: "wk_config",
+} as const;
+
+function load<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function save(key: string, data: unknown): void {
+  localStorage.setItem(key, JSON.stringify(data));
+}
+
 const DEFAULT_REPORT_CONFIG: WkReportConfig = {
   defaultDepartment: "",
   approvalLine:
@@ -20,90 +43,35 @@ const DEFAULT_REPORT_CONFIG: WkReportConfig = {
 // fetchWeekendState
 // ─────────────────────────────────────────────
 export async function fetchWeekendState(): Promise<WkState | null> {
-  const [sitesRes, employeesRes, recordsRes, uploadsRes, configRes] =
-    await Promise.all([
-      (supabase as any).from("wk_sites").select("*"),
-      (supabase as any).from("wk_employees").select("*"),
-      (supabase as any).from("wk_records").select("*"),
-      (supabase as any)
-        .from("wk_uploads")
-        .select("*")
-        .order("uploaded_at", { ascending: false }),
-      (supabase as any).from("wk_config").select("*"),
-    ]);
+  const sitesArr: WkSite[] = load(LS.sites, []);
+  const employeesArr: WkEmployee[] = load(LS.employees, []);
+  const recordsArr: WkRecord[] = load(LS.records, []);
+  const uploads: WkUpload[] = load(LS.uploads, []);
+  const config: Record<string, unknown> = load(LS.config, {});
 
-  // Map sites
-  const sites: WkSite[] = ((sitesRes.data as any[]) || []).map((row) => ({
-    name: row.name,
-    lunchMinutes: row.lunch_minutes,
-    department: row.department ?? "",
-    createdAt: row.created_at,
-  }));
+  const sites: Record<string, WkSite> = {};
+  for (const s of sitesArr) sites[s.name] = s;
 
-  // Map employees
-  const employees: WkEmployee[] = (
-    (employeesRes.data as any[]) || []
-  ).map((row) => ({
-    name: row.name,
-    site: row.site,
-    organization: row.organization ?? "",
-    position: row.position ?? "",
-    note: row.note ?? "",
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  }));
+  const employees: Record<string, WkEmployee> = {};
+  for (const e of employeesArr) employees[e.name] = e;
 
-  // Map records
-  const records: WkRecord[] = ((recordsRes.data as any[]) || []).map((row) => ({
-    key: row.key,
-    date: row.date,
-    name: row.name,
-    organization: row.organization ?? "",
-    position: row.position ?? "",
-    schedule: row.schedule ?? "",
-    checkIn: row.check_in ?? "",
-    checkOut: row.check_out ?? "",
-    site: row.site ?? "",
-    stayMinutes: row.stay_minutes ?? 0,
-    lunchMinutes: row.lunch_minutes ?? 0,
-    workMinutes: row.work_minutes ?? 0,
-    warnings: row.warnings ?? [],
-    manualOverride: row.manual_override ?? false,
-    lunchOverride: row.lunch_override ?? false,
-    uploadId: row.upload_id ?? null,
-    createdAt: row.created_at,
-  }));
+  const records: Record<string, WkRecord> = {};
+  for (const r of recordsArr) records[r.key] = r;
 
-  // Map uploads
-  const uploads: WkUpload[] = ((uploadsRes.data as any[]) || []).map((row) => ({
-    id: row.id,
-    filename: row.filename,
-    periodStart: row.period_start,
-    periodEnd: row.period_end,
-    uploadedAt: row.uploaded_at,
-    rowCount: row.row_count,
-    validRows: row.valid_rows,
-  }));
-
-  // Parse config rows
-  const configRows: { key: string; value: any }[] = (
-    (configRes.data as any[]) || []
-  ).map((row) => ({ key: row.key, value: row.value }));
-
-  const presetsRow = configRows.find((r) => r.key === "presets");
-  const monthlyReportsRow = configRows.find((r) => r.key === "monthlyReports");
-  const reportConfigRow = configRows.find((r) => r.key === "reportConfig");
-
-  const presets: WkPreset[] = presetsRow?.value ?? [];
-  const monthlyReports: WkMonthlyReport[] = monthlyReportsRow?.value ?? [];
+  const presets: WkPreset[] = (config.presets as WkPreset[]) ?? [];
+  const monthlyReports: Record<string, WkMonthlyReport> =
+    (config.monthlyReports as Record<string, WkMonthlyReport>) ?? {};
   const reportConfig: WkReportConfig =
-    reportConfigRow?.value ?? DEFAULT_REPORT_CONFIG;
+    (config.reportConfig as WkReportConfig) ?? DEFAULT_REPORT_CONFIG;
 
   return {
     sites,
     employees,
     records,
-    uploads,
+    uploads: uploads.sort(
+      (a, b) =>
+        new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
+    ),
     presets,
     monthlyReports,
     reportConfig,
@@ -111,173 +79,86 @@ export async function fetchWeekendState(): Promise<WkState | null> {
 }
 
 // ─────────────────────────────────────────────
-// saveWkSites — delete all then upsert
+// saveWkSites
 // ─────────────────────────────────────────────
 export async function saveWkSites(sites: WkSite[]): Promise<void> {
-  const { error: deleteError } = await (supabase as any)
-    .from("wk_sites")
-    .delete()
-    .neq("name", "");
-  if (deleteError)
-    throw new Error(`wk_sites delete error: ${deleteError.message}`);
-
-  if (sites.length === 0) return;
-
-  const rows = sites.map((s) => ({
-    name: s.name,
-    lunch_minutes: s.lunchMinutes,
-    department: s.department ?? "",
-  }));
-
-  for (let i = 0; i < rows.length; i += 50) {
-    const { error } = await (supabase as any)
-      .from("wk_sites")
-      .upsert(rows.slice(i, i + 50), { onConflict: "name" });
-    if (error) throw new Error(`wk_sites upsert error: ${error.message}`);
-  }
+  save(LS.sites, sites);
 }
 
 // ─────────────────────────────────────────────
-// saveWkEmployee — single upsert
+// saveWkEmployee
 // ─────────────────────────────────────────────
 export async function saveWkEmployee(emp: WkEmployee): Promise<void> {
-  const row = {
-    name: emp.name,
-    site: emp.site,
-    organization: emp.organization ?? "",
-    position: emp.position ?? "",
-    note: emp.note ?? "",
-  };
-  const { error } = await (supabase as any)
-    .from("wk_employees")
-    .upsert(row, { onConflict: "name" });
-  if (error) throw new Error(`wk_employees upsert error: ${error.message}`);
+  const arr: WkEmployee[] = load(LS.employees, []);
+  const idx = arr.findIndex((e) => e.name === emp.name);
+  if (idx >= 0) arr[idx] = emp;
+  else arr.push(emp);
+  save(LS.employees, arr);
 }
 
 // ─────────────────────────────────────────────
-// saveWkEmployeesBatch — batch upsert (50 per batch)
+// saveWkEmployeesBatch
 // ─────────────────────────────────────────────
 export async function saveWkEmployeesBatch(emps: WkEmployee[]): Promise<void> {
   if (emps.length === 0) return;
-
-  const rows = emps.map((emp) => ({
-    name: emp.name,
-    site: emp.site,
-    organization: emp.organization ?? "",
-    position: emp.position ?? "",
-    note: emp.note ?? "",
-  }));
-
-  for (let i = 0; i < rows.length; i += 50) {
-    const { error } = await (supabase as any)
-      .from("wk_employees")
-      .upsert(rows.slice(i, i + 50), { onConflict: "name" });
-    if (error)
-      throw new Error(`wk_employees batch upsert error: ${error.message}`);
-  }
+  const arr: WkEmployee[] = load(LS.employees, []);
+  const map = new Map(arr.map((e) => [e.name, e]));
+  for (const emp of emps) map.set(emp.name, emp);
+  save(LS.employees, Array.from(map.values()));
 }
 
 // ─────────────────────────────────────────────
-// deleteWkEmployee — delete employee + their records
+// deleteWkEmployee
 // ─────────────────────────────────────────────
 export async function deleteWkEmployee(name: string): Promise<void> {
-  const { error: recordsError } = await (supabase as any)
-    .from("wk_records")
-    .delete()
-    .eq("name", name);
-  if (recordsError)
-    throw new Error(
-      `wk_records delete (employee) error: ${recordsError.message}`
-    );
+  const emps: WkEmployee[] = load(LS.employees, []);
+  save(LS.employees, emps.filter((e) => e.name !== name));
 
-  const { error: empError } = await (supabase as any)
-    .from("wk_employees")
-    .delete()
-    .eq("name", name);
-  if (empError)
-    throw new Error(`wk_employees delete error: ${empError.message}`);
+  const recs: WkRecord[] = load(LS.records, []);
+  save(LS.records, recs.filter((r) => r.name !== name));
 }
 
 // ─────────────────────────────────────────────
-// saveWkRecordsBatch — batch upsert (50 per batch)
+// saveWkRecordsBatch
 // ─────────────────────────────────────────────
 export async function saveWkRecordsBatch(records: WkRecord[]): Promise<void> {
   if (records.length === 0) return;
-
-  const rows = records.map((r) => ({
-    key: r.key,
-    date: r.date,
-    name: r.name,
-    organization: r.organization ?? "",
-    position: r.position ?? "",
-    schedule: r.schedule ?? "",
-    check_in: r.checkIn ?? "",
-    check_out: r.checkOut ?? "",
-    site: r.site ?? "",
-    stay_minutes: r.stayMinutes ?? 0,
-    lunch_minutes: r.lunchMinutes ?? 0,
-    work_minutes: r.workMinutes ?? 0,
-    warnings: r.warnings ?? [],
-    manual_override: r.manualOverride ?? false,
-    lunch_override: r.lunchOverride ?? false,
-    upload_id: r.uploadId ?? null,
-  }));
-
-  for (let i = 0; i < rows.length; i += 50) {
-    const { error } = await (supabase as any)
-      .from("wk_records")
-      .upsert(rows.slice(i, i + 50), { onConflict: "key" });
-    if (error)
-      throw new Error(`wk_records batch upsert error: ${error.message}`);
-  }
+  const arr: WkRecord[] = load(LS.records, []);
+  const map = new Map(arr.map((r) => [r.key, r]));
+  for (const rec of records) map.set(rec.key, rec);
+  save(LS.records, Array.from(map.values()));
 }
 
 // ─────────────────────────────────────────────
-// saveWkUpload — single upsert
+// saveWkUpload
 // ─────────────────────────────────────────────
 export async function saveWkUpload(upload: WkUpload): Promise<void> {
-  const row = {
-    id: upload.id,
-    filename: upload.filename,
-    period_start: upload.periodStart,
-    period_end: upload.periodEnd,
-    row_count: upload.rowCount,
-    valid_rows: upload.validRows,
-  };
-  const { error } = await (supabase as any)
-    .from("wk_uploads")
-    .upsert(row, { onConflict: "id" });
-  if (error) throw new Error(`wk_uploads upsert error: ${error.message}`);
+  const arr: WkUpload[] = load(LS.uploads, []);
+  const idx = arr.findIndex((u) => u.id === upload.id);
+  if (idx >= 0) arr[idx] = upload;
+  else arr.push(upload);
+  save(LS.uploads, arr);
 }
 
 // ─────────────────────────────────────────────
-// deleteWkUpload — delete upload + non-manual records with that upload_id
+// deleteWkUpload
 // ─────────────────────────────────────────────
 export async function deleteWkUpload(uploadId: string): Promise<void> {
-  const { error: recordsError } = await (supabase as any)
-    .from("wk_records")
-    .delete()
-    .eq("upload_id", uploadId)
-    .eq("manual_override", false);
-  if (recordsError)
-    throw new Error(
-      `wk_records delete (upload) error: ${recordsError.message}`
-    );
+  const recs: WkRecord[] = load(LS.records, []);
+  save(
+    LS.records,
+    recs.filter((r) => !(r.uploadId === uploadId && !r.manualOverride))
+  );
 
-  const { error: uploadError } = await (supabase as any)
-    .from("wk_uploads")
-    .delete()
-    .eq("id", uploadId);
-  if (uploadError)
-    throw new Error(`wk_uploads delete error: ${uploadError.message}`);
+  const uploads: WkUpload[] = load(LS.uploads, []);
+  save(LS.uploads, uploads.filter((u) => u.id !== uploadId));
 }
 
 // ─────────────────────────────────────────────
-// saveWkConfig — upsert to wk_config
+// saveWkConfig
 // ─────────────────────────────────────────────
 export async function saveWkConfig(key: string, value: unknown): Promise<void> {
-  const { error } = await (supabase as any)
-    .from("wk_config")
-    .upsert({ key, value }, { onConflict: "key" });
-  if (error) throw new Error(`wk_config upsert error: ${error.message}`);
+  const config: Record<string, unknown> = load(LS.config, {});
+  config[key] = value;
+  save(LS.config, config);
 }

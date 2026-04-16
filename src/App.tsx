@@ -4,7 +4,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Component, type ReactNode } from "react";
-import Index from "./pages/Index.tsx";
+import WeekendPage from "./pages/WeekendPage.tsx";
 import NotFound from "./pages/NotFound.tsx";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -41,8 +41,7 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
-            <Route path="/" element={<Index />} />
-            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+            <Route path="/" element={<WeekendPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
