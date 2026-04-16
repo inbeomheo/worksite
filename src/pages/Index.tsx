@@ -281,7 +281,7 @@ const Index = () => {
 
       <div className="p-4 md:p-6 max-w-[1500px] mx-auto space-y-3">
         {/* File upload + save */}
-        <div className="flex items-center gap-3">
+        {activeTab !== "주말근무" && <div className="flex items-center gap-3">
           <div className="flex-1">
             <FileUploadZone
               onFileLoaded={handleFileLoaded}
@@ -300,7 +300,7 @@ const Index = () => {
               {isSaving ? "저장 중..." : "업로드 & 저장"}
             </button>
           )}
-        </div>
+        </div>}
 
         {data && activeTab === "근태보고" && (
           <>
