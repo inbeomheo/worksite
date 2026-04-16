@@ -64,3 +64,34 @@
     font-feature-settings: 'tnum';
   }
 }
+
+/* ── 주말근무 히트맵 ── */
+.wk-heat-1 { @apply bg-blue-100 dark:bg-blue-950; }
+.wk-heat-2 { @apply bg-blue-200 dark:bg-blue-900; }
+.wk-heat-3 { @apply bg-blue-400 dark:bg-blue-700; }
+.wk-heat-4 { @apply bg-blue-500 dark:bg-blue-600 text-white; }
+.wk-heat-5 { @apply bg-blue-700 dark:bg-blue-400 text-white dark:text-slate-900; }
+
+/* ── 주말근무 월간보고서 ── */
+.wk-report-doc {
+  @apply font-sans text-slate-900 bg-white p-5 max-w-[900px] mx-auto border border-slate-200 rounded-lg;
+}
+.wk-report-doc h2 { @apply text-lg font-bold mb-3; }
+.wk-report-doc h3 { @apply text-sm font-bold mt-4 mb-2; }
+.wk-rpt-table {
+  @apply w-full border-collapse text-[13px];
+}
+.wk-rpt-table th,
+.wk-rpt-table td {
+  @apply border border-blue-900 px-2 py-1.5 text-center align-middle;
+}
+.wk-rpt-table thead th {
+  @apply bg-blue-900 text-white font-bold;
+}
+
+/* ── 인쇄: 보고서만 ── */
+@media print {
+  body.wk-print-report .wk-no-print { display: none !important; }
+  body.wk-print-report .wk-report-doc { border: none; padding: 0; max-width: none; }
+  @page { margin: 15mm; size: A4 portrait; }
+}
